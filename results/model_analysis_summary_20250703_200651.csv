@@ -1,0 +1,2 @@
+model_name,data_source,total_tokens,total_prompts,mean_entropy,std_entropy,mean_probability,std_probability,timestamp
+/tmpdir/m24047krsh/models/qwen-2.5-1.5b-instruct-reasoning-sft-checkpoint-8-of-10,/tmpdir/m24047krsh/changes_in_reasoning/data_subset.jsonl,25584,100,0.4340610976790079,0.6018807296657819,0.796504179977711,0.3065278297718456,20250703_200651

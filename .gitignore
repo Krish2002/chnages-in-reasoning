@@ -48,5 +48,5 @@ Thumbs.db
 
 # Large data files (optional - uncomment if you don't want to include data files)
 # *.jsonl
-# results/
-# plots/ 
+results/
+plots/ 

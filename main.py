@@ -7,6 +7,7 @@ import os
 import json
 import argparse
 from datetime import datetime
+from collections import defaultdict, Counter
 
 # Set device
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -71,6 +72,7 @@ def process_generations(model, tokenizer, prompts, max_new_tokens=256):
         
         stats = get_stats_for_generation(model, tokenizer, generated_ids, prompt_length)
         full_text = tokenizer.decode(generated_ids[0], skip_special_tokens=True)
+        generation_length = generated_ids.shape[1] - prompt_length
         print("Done.")
         print("-" * 30)
         
@@ -79,10 +81,11 @@ def process_generations(model, tokenizer, prompts, max_new_tokens=256):
             "prompt": formatted_prompt,
             "stats": stats,
             "full_text": full_text,
+            "generation_length": generation_length,
         })
     return all_outputs
 
-def load_prompts_from_jsonl(file_path):
+def load_prompts_from_jsonl(file_path, max_prompts=1000):
     """Load prompts from a JSONL file, extracting only system and user roles."""
     prompts = []
     
@@ -90,6 +93,9 @@ def load_prompts_from_jsonl(file_path):
     
     with open(file_path, 'r', encoding='utf-8') as f:
         for line_num, line in enumerate(f, 1):
+            if len(prompts) >= max_prompts:
+                break
+                
             try:
                 data = json.loads(line.strip())
                 conversations = data.get('conversations', [])
@@ -116,30 +122,139 @@ def load_prompts_from_jsonl(file_path):
     print(f"Loaded {len(prompts)} prompts from {file_path}")
     return prompts
 
-def analyze_token_qcuts(df, metric_column, model_name, n_qcuts=10):
-    """Analyze token quantiles based on a metric."""
-    print(f"\n{'=' * 30}")
-    print(f"Token qcuts for {model_name} based on '{metric_column}'")
-    print("=" * 30)
+def analyze_token_entropy_changes(all_model_results, output_dir, timestamp):
+    """Analyze how token entropies changed across models and which tokens changed the most."""
+    print(f"\n{'#' * 60}")
+    print("ANALYZING TOKEN ENTROPY CHANGES ACROSS MODELS")
+    print(f"{'#' * 60}")
     
-    qcut_col_name = f'{metric_column}_qcut'
-    df[qcut_col_name] = pd.qcut(df[metric_column], n_qcuts, labels=False, duplicates='drop')
-    qcut_intervals = pd.qcut(df[metric_column], n_qcuts, duplicates='drop')
-    interval_map = {i: interval for i, interval in enumerate(qcut_intervals.cat.categories)}
+    # Collect all token data across models
+    all_token_data = []
+    model_names = []
     
-    num_actual_qcuts = df[qcut_col_name].nunique()
-    qcuts_to_display = sorted(list(set([0, num_actual_qcuts // 4, num_actual_qcuts // 2, num_actual_qcuts * 3 // 4, num_actual_qcuts - 1])))
-
-    for qcut_idx in qcuts_to_display:
-        df_qcut = df[df[qcut_col_name] == qcut_idx].copy()
-        df_qcut.sort_values(by=metric_column, inplace=True)
-        print(f"\n--- qcut {qcut_idx + 1}/{num_actual_qcuts} (range: {interval_map[qcut_idx]}) ---")
-        num_samples = min(5, len(df_qcut))
-        step = max(1, len(df_qcut) // num_samples)
+    for result in all_model_results:
+        model_name = result['model_name_clean']
+        model_names.append(model_name)
         
-        print(df_qcut[['current_token', 'next_token', metric_column]].iloc[::step])
+        # Load the stats file
+        stats_df = pd.read_csv(result['stats_file'])
+        
+        # Add model information
+        stats_df['model'] = model_name
+        all_token_data.append(stats_df)
     
-    return df
+    # Combine all data
+    combined_df = pd.concat(all_token_data, ignore_index=True)
+    
+    # Analyze average generation length per model
+    length_stats = combined_df.groupby('model')['generation_length'].agg(['mean', 'std', 'min', 'max']).reset_index()
+    length_stats.columns = ['model', 'avg_generation_length', 'std_generation_length', 'min_generation_length', 'max_generation_length']
+    
+    # Save length statistics
+    length_filename = os.path.join(output_dir, f'generation_length_stats_{timestamp}.csv')
+    length_stats.to_csv(length_filename, index=False)
+    print(f"Generation length statistics saved to: {length_filename}")
+    
+    # Analyze entropy changes for specific tokens
+    token_entropy_changes = analyze_specific_token_changes(combined_df, output_dir, timestamp)
+    
+    # Analyze overall entropy statistics per model
+    entropy_stats = combined_df.groupby('model')['entropy'].agg(['mean', 'std', 'min', 'max']).reset_index()
+    entropy_stats.columns = ['model', 'avg_entropy', 'std_entropy', 'min_entropy', 'max_entropy']
+    
+    # Save entropy statistics
+    entropy_filename = os.path.join(output_dir, f'entropy_stats_{timestamp}.csv')
+    entropy_stats.to_csv(entropy_filename, index=False)
+    print(f"Entropy statistics saved to: {entropy_filename}")
+    
+    # Analyze tokens with highest entropy variance across models
+    token_variance_analysis = analyze_token_variance(combined_df, output_dir, timestamp)
+    
+    return {
+        'length_stats': length_stats,
+        'entropy_stats': entropy_stats,
+        'token_entropy_changes': token_entropy_changes,
+        'token_variance_analysis': token_variance_analysis
+    }
+
+def analyze_specific_token_changes(combined_df, output_dir, timestamp):
+    """Analyze how specific tokens' entropy changed across models."""
+    print(f"\nAnalyzing specific token entropy changes...")
+    
+    # Focus on common tokens that appear across multiple models
+    token_counts = combined_df['current_token'].value_counts()
+    common_tokens = token_counts[token_counts >= 10].index.tolist()  # Tokens that appear at least 10 times
+    
+    token_entropy_data = []
+    
+    for token in common_tokens[:100]:  # Limit to top 100 tokens for analysis
+        token_data = combined_df[combined_df['current_token'] == token]
+        
+        if len(token_data) > 0:
+            # Calculate entropy statistics for this token across models
+            token_stats = token_data.groupby('model')['entropy'].agg(['mean', 'std', 'count']).reset_index()
+            token_stats['token'] = token
+            
+            # Calculate entropy change (if we have multiple models)
+            if len(token_stats) > 1:
+                min_entropy = token_stats['mean'].min()
+                max_entropy = token_stats['mean'].max()
+                entropy_range = max_entropy - min_entropy
+                token_stats['entropy_range'] = entropy_range
+                token_stats['entropy_variance'] = token_stats['mean'].var()
+            else:
+                token_stats['entropy_range'] = 0
+                token_stats['entropy_variance'] = 0
+            
+            token_entropy_data.append(token_stats)
+    
+    if token_entropy_data:
+        token_entropy_df = pd.concat(token_entropy_data, ignore_index=True)
+        
+        # Save token entropy changes
+        token_entropy_filename = os.path.join(output_dir, f'token_entropy_changes_{timestamp}.csv')
+        token_entropy_df.to_csv(token_entropy_filename, index=False)
+        print(f"Token entropy changes saved to: {token_entropy_filename}")
+        
+        # Find tokens with highest entropy variance
+        token_variance = token_entropy_df.groupby('token')['entropy_variance'].first().sort_values(ascending=False)
+        high_variance_tokens = token_variance.head(50)
+        
+        # Save high variance tokens
+        high_variance_filename = os.path.join(output_dir, f'high_variance_tokens_{timestamp}.csv')
+        high_variance_tokens.to_csv(high_variance_filename)
+        print(f"High variance tokens saved to: {high_variance_filename}")
+        
+        return token_entropy_df
+    
+    return pd.DataFrame()
+
+def analyze_token_variance(combined_df, output_dir, timestamp):
+    """Analyze which tokens have the highest variance in entropy across models."""
+    print(f"\nAnalyzing token variance across models...")
+    
+    # Group by token and calculate variance across models
+    token_variance = combined_df.groupby('current_token')['entropy'].agg(['mean', 'std', 'var', 'count']).reset_index()
+    token_variance.columns = ['token', 'mean_entropy', 'std_entropy', 'variance_entropy', 'occurrence_count']
+    
+    # Filter tokens that appear multiple times
+    token_variance = token_variance[token_variance['occurrence_count'] >= 5]
+    
+    # Sort by variance
+    token_variance = token_variance.sort_values('variance_entropy', ascending=False)
+    
+    # Save token variance analysis
+    variance_filename = os.path.join(output_dir, f'token_variance_analysis_{timestamp}.csv')
+    token_variance.to_csv(variance_filename, index=False)
+    print(f"Token variance analysis saved to: {variance_filename}")
+    
+    # Save top tokens with highest variance
+    top_variance_tokens = token_variance.head(100)
+    top_variance_filename = os.path.join(output_dir, f'top_variance_tokens_{timestamp}.csv')
+    top_variance_tokens.to_csv(top_variance_filename, index=False)
+    print(f"Top variance tokens saved to: {top_variance_filename}")
+    
+    return token_variance
 
 def process_single_model(model_name, prompts, max_new_tokens, output_dir, timestamp):
     """Process a single model and save its results."""
@@ -161,12 +276,14 @@ def process_single_model(model_name, prompts, max_new_tokens, output_dir, timest
         prompt_id = result['prompt_id']
         stats_df = result['stats']
         full_text = result['full_text']
+        generation_length = result['generation_length']
         
         # Add prompt information to each row
         for idx, row in stats_df.iterrows():
             stats_data = {
                 'prompt_id': prompt_id,
                 'full_text': full_text,
+                'generation_length': generation_length,
                 'token_position': idx,
                 'current_token': row['current_token'],
                 'next_token': row['next_token'],
@@ -186,15 +303,13 @@ def process_single_model(model_name, prompts, max_new_tokens, output_dir, timest
     print(f"Total tokens analyzed: {len(final_df)}")
     print(f"Total prompts processed: {len(prompts)}")
     print(f"Model used: {model_name}")
+    print(f"Average generation length: {final_df['generation_length'].mean():.2f} tokens")
     
     print(f"\nEntropy statistics:")
     print(final_df['entropy'].describe())
     
     print(f"\nProbability of chosen token statistics:")
     print(final_df['probability_of_next_token'].describe())
-    
-    # Analyze token quantiles and add to dataframe
-    final_df = analyze_token_qcuts(final_df, 'entropy', model_name_clean, n_qcuts=10)
     
     # Save the dataframe
     output_filename = os.path.join(output_dir, f'{model_name_clean}_stats_{timestamp}.csv')
@@ -207,6 +322,8 @@ def process_single_model(model_name, prompts, max_new_tokens, output_dir, timest
         'model_name_clean': model_name_clean,
         'total_tokens': len(final_df),
         'total_prompts': len(prompts),
+        'avg_generation_length': final_df['generation_length'].mean(),
+        'std_generation_length': final_df['generation_length'].std(),
         'mean_entropy': final_df['entropy'].mean(),
         'std_entropy': final_df['entropy'].std(),
         'mean_probability': final_df['probability_of_next_token'].mean(),
@@ -219,23 +336,6 @@ def process_single_model(model_name, prompts, max_new_tokens, output_dir, timest
     summary_df.to_csv(summary_filename, index=False)
     print(f"Summary statistics saved to: {summary_filename}")
     
-    # Save interesting findings to separate files
-    high_entropy_tokens = final_df.nlargest(100, 'entropy')[['current_token', 'next_token', 'entropy', 'prompt_id', 'token_position']]
-    low_entropy_tokens = final_df.nsmallest(100, 'entropy')[['current_token', 'next_token', 'entropy', 'prompt_id', 'token_position']]
-    confident_tokens = final_df.nlargest(100, 'probability_of_next_token')[['current_token', 'next_token', 'probability_of_next_token', 'prompt_id', 'token_position']]
-    
-    high_entropy_filename = os.path.join(output_dir, f'{model_name_clean}_high_entropy_tokens_{timestamp}.csv')
-    low_entropy_filename = os.path.join(output_dir, f'{model_name_clean}_low_entropy_tokens_{timestamp}.csv')
-    confident_tokens_filename = os.path.join(output_dir, f'{model_name_clean}_confident_tokens_{timestamp}.csv')
-    
-    high_entropy_tokens.to_csv(high_entropy_filename, index=False)
-    low_entropy_tokens.to_csv(low_entropy_filename, index=False)
-    confident_tokens.to_csv(confident_tokens_filename, index=False)
-    
-    print(f"High entropy tokens saved to: {high_entropy_filename}")
-    print(f"Low entropy tokens saved to: {low_entropy_filename}")
-    print(f"Confident tokens saved to: {confident_tokens_filename}")
-    
     # Clear model from memory
     del model, tokenizer
     torch.cuda.empty_cache() if torch.cuda.is_available() else None
@@ -246,13 +346,14 @@ def process_single_model(model_name, prompts, max_new_tokens, output_dir, timest
         'stats_file': output_filename,
         'summary_file': summary_filename,
         'total_tokens': len(final_df),
+        'avg_generation_length': final_df['generation_length'].mean(),
         'mean_entropy': final_df['entropy'].mean(),
         'mean_probability': final_df['probability_of_next_token'].mean()
     }
 
 def main():
     # Set up argument parser
-    parser = argparse.ArgumentParser(description='Analyze multiple language models for token-level statistics')
+    parser = argparse.ArgumentParser(description='Analyze multiple language models for token-level statistics and entropy changes')
     parser.add_argument('--models', nargs='+', required=True, 
                        help='List of model paths or HuggingFace model names (space-separated)')
     parser.add_argument('--max-new-tokens', type=int, default=256,
@@ -260,28 +361,33 @@ def main():
     parser.add_argument('--output-dir', type=str, 
                        default="/tmpdir/m24047krsh/changes_in_reasoning/results",
                        help='Directory to save results')
+    parser.add_argument('--max-prompts', type=int, default=1000,
+                       help='Maximum number of prompts to process (default: 1000)')
     
     args = parser.parse_args()
     
     # Configuration
     MODEL_NAMES = args.models
     MAX_NEW_TOKENS = args.max_new_tokens
-    DATA_FILE = "data_full.jsonl"  # Explicitly use data_full.jsonl
+    MAX_PROMPTS = args.max_prompts
+    DATA_FILE = "data_subset.jsonl"  # Use data_subset.jsonl for the first 1000 prompts
     OUTPUT_DIR = args.output_dir
     
     # Create output directory if it doesn't exist
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     
-    # Load prompts from JSONL file
+    # Load prompts from JSONL file (limited to first 1000)
     if not os.path.exists(DATA_FILE):
         print(f"Error: {DATA_FILE} not found!")
         return
     
-    PROMPTS = load_prompts_from_jsonl(DATA_FILE)
+    PROMPTS = load_prompts_from_jsonl(DATA_FILE, max_prompts=MAX_PROMPTS)
     
     if not PROMPTS:
         print("No prompts loaded! Exiting.")
         return
+    
+    print(f"Processing first {len(PROMPTS)} prompts from the dataset.")
     
     # Generate timestamp for file naming
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -301,6 +407,10 @@ def main():
             print(f"Error processing model {model_name}: {e}")
             continue
     
+    # Analyze token entropy changes across models
+    if len(all_model_results) > 1:
+        entropy_analysis = analyze_token_entropy_changes(all_model_results, OUTPUT_DIR, timestamp)
+    
     # Create overall summary
     if all_model_results:
         print(f"\n{'#' * 60}")
@@ -313,6 +423,7 @@ def main():
                 'model_name': result['model_name'],
                 'model_name_clean': result['model_name_clean'],
                 'total_tokens': result['total_tokens'],
+                'avg_generation_length': result['avg_generation_length'],
                 'mean_entropy': result['mean_entropy'],
                 'mean_probability': result['mean_probability'],
                 'stats_file': result['stats_file'],
@@ -327,6 +438,7 @@ def main():
         print(f"\nProcessed {len(all_model_results)} models successfully:")
         for result in all_model_results:
             print(f"  - {result['model_name_clean']}: {result['total_tokens']} tokens, "
+                  f"avg length: {result['avg_generation_length']:.2f}, "
                   f"mean entropy: {result['mean_entropy']:.4f}, "
                   f"mean probability: {result['mean_probability']:.4f}")
     

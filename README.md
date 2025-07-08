@@ -140,23 +140,6 @@ python model_comparison_analysis.py \
     --save_detailed_tokens
 ```
 
-## ⚠️ Important Notes
-
-### Memory Requirements
-- **All models are loaded simultaneously** - ensure sufficient GPU memory
-- **4 models × 1.5B parameters** ≈ 6GB+ GPU memory needed
-- Consider using fewer models or smaller batch sizes if memory is limited
-
-### Generation Analysis
-- **Only generated tokens are analyzed** (not system/user prompts)
-- **Generation steps start from 1** (first generated token)
-- **Entropy is calculated on next-token distributions**
-
-### File Sizes
-- **Detailed token files can be large** (1000 prompts × 256 tokens × 4 models)
-- **Use `--save_detailed_tokens` only when needed**
-- **Results are saved incrementally** to avoid losing progress
-
 ## 🔬 Understanding the Results
 
 ### High Entropy Tokens
@@ -174,37 +157,7 @@ python model_comparison_analysis.py \
 - **Spikes in entropy**: Model faces difficult decisions
 - **Checkpoint differences**: Training progress indicators
 
-## 🛠️ Troubleshooting
 
-### Common Issues
-1. **Out of Memory**: Reduce number of models or use smaller examples
-2. **Model Path Not Found**: Verify paths exist and are accessible
-3. **Data File Not Found**: Check the `--data_path` argument
-4. **CUDA Issues**: Script automatically falls back to CPU if CUDA unavailable
-
-### Debug Information
-The script provides detailed debug output:
-- Model loading progress
-- Prompt vs generation lengths
-- Number of tokens analyzed
-- Sample token statistics
-
-## 📚 Example Analysis Workflow
-
-1. **Start with a small test** (5-10 examples)
-2. **Verify model paths and data format**
-3. **Run full analysis** with desired parameters
-4. **Examine visualizations** for overall patterns
-5. **Analyze detailed statistics** for specific insights
-6. **Compare checkpoints** to understand training progress
-
-## 🤝 Contributing
-
-This script is designed for research purposes. Feel free to modify for your specific needs:
-- Add new metrics in `get_stats_for_generation()`
-- Modify visualization functions
-- Extend analysis capabilities
-- Add support for different data formats
 
 ## 📄 License
 

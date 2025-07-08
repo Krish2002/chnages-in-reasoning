@@ -1,83 +1,211 @@
-# Model Token-Level Analysis
+# Model Comparison Analysis for Reasoning Tasks
 
-This script analyzes token-level statistics (entropy and probability) for language model generations. It's based on the notebook `sft-base-comparison.ipynb` but simplified to analyze a single model.
+This script analyzes and compares multiple language model checkpoints by examining their token-level entropy and generation statistics. It's specifically designed for analyzing how model behavior changes during training, particularly for reasoning tasks.
 
-## Features
+## 🎯 Purpose
 
-- **Token-level entropy analysis**: Calculates entropy for each token position during generation
-- **Probability analysis**: Tracks the probability of chosen tokens
-- **Comprehensive statistics**: Aggregates data across multiple prompts
-- **Visualizations**: Creates plots showing distributions and relationships
-- **Data export**: Saves all statistics to CSV files for further analysis
+The script helps researchers understand:
+- How entropy distributions change across different training checkpoints
+- Which tokens have high/low entropy during generation
+- How model confidence evolves during training
+- Differences in generation patterns between checkpoints
 
-## Installation
+## 🚀 Quick Start
 
-1. Install the required dependencies:
+### Basic Usage (2 Models)
 ```bash
-pip install -r requirements.txt
+python model_comparison_analysis.py \
+    --model_paths /path/to/model1 /path/to/model2 \
+    --model_names "Base" "Finetuned"
 ```
 
-## Usage
+### Multi-Model Comparison (4 Checkpoints)
+```bash
+python model_comparison_analysis.py \
+    --model_paths /tmpdir/m24047krsh/models/qwen-2.5-1.5b-instruct-reasoning-sft-checkpoint-1-of-10 \
+                  /tmpdir/m24047krsh/models/qwen-2.5-1.5b-instruct-reasoning-sft-checkpoint-2-of-10 \
+                  /tmpdir/m24047krsh/models/qwen-2.5-1.5b-instruct-reasoning-sft-checkpoint-4-of-10 \
+                  /tmpdir/m24047krsh/models/qwen-2.5-1.5b-instruct-reasoning-sft-checkpoint-10-of-10 \
+    --model_names "Checkpoint_1" "Checkpoint_2" "Checkpoint_4" "Checkpoint_10" \
+    --num_examples 1000 \
+    --max_new_tokens 256
+```
 
-1. **Configure the model**: Edit the `MODEL_NAME` variable in `main.py` to point to your model:
-   ```python
-   MODEL_NAME = "Qwen/Qwen2.5-1.5B-Instruct"  # Change this to your model
-   ```
+## 📋 Requirements
 
-2. **Run the analysis**:
-   ```bash
-   python main.py
-   ```
+Install the required dependencies:
+```bash
+pip install torch transformers numpy pandas matplotlib
+```
 
-## Output Files
+## 🔧 Command Line Arguments
 
-The script generates several output files with timestamps:
+| Argument | Type | Required | Default | Description |
+|----------|------|----------|---------|-------------|
+| `--model_paths` | str | ✅ | - | Paths to model checkpoints (space-separated) |
+| `--model_names` | str | ✅ | - | Names for the models (space-separated, same order as paths) |
+| `--data_path` | str | ❌ | `/tmpdir/m24047krsh/changes_in_reasoning/data_full.jsonl` | Path to JSONL data file |
+| `--num_examples` | int | ❌ | 1000 | Number of examples to process |
+| `--max_new_tokens` | int | ❌ | 256 | Maximum new tokens to generate |
+| `--output_dir` | str | ❌ | `/tmpdir/m24047krsh/changes_in_reasoning/results` | Output directory for results |
+| `--save_detailed_tokens` | flag | ❌ | False | Save detailed token-level stats (can be large) |
 
-- `model_analysis_stats_YYYYMMDD_HHMMSS.csv`: Complete token-level statistics
-- `model_analysis_summary_YYYYMMDD_HHMMSS.csv`: Summary statistics
-- `model_analysis_plots_YYYYMMDD_HHMMSS.png`: Visualization plots
+## 📊 Data Format
 
-## Data Structure
+The script expects a JSONL file where each line contains:
+```json
+{
+  "conversations": [
+    {
+      "role": "system",
+      "content": "You are a helpful assistant. Think step by step..."
+    },
+    {
+      "role": "user", 
+      "content": "What is the value of x in the equation..."
+    },
+    {
+      "role": "assistant",
+      "content": "<think>...</think>\n\nAnswer: \\boxed{...}"
+    }
+  ]
+}
+```
 
-The main CSV file contains the following columns:
+The script extracts the system and user messages to create prompts for generation.
 
-- `prompt_id`: Identifier for each prompt
-- `full_text`: Complete generated text
-- `token_position`: Position of the token in the generation
-- `current_token`: The current token being analyzed
-- `next_token`: The next token that was generated
-- `entropy`: Entropy of the token distribution at this position
-- `probability_of_next_token`: Probability of the chosen next token
+## 📈 Output Files
 
-## Analysis Features
+### Core Analysis Files
+- **`{model_name}_token_stats.csv`** - Aggregated token statistics for each model
+- **`prompt_level_results.csv`** - Summary statistics for each prompt across all models
+- **`results_summary.json`** - Overall statistics and model paths
 
-1. **Entropy Analysis**: Shows how uncertain the model is at each token position
-2. **Probability Analysis**: Shows how confident the model is in its predictions
-3. **Token Quantiles**: Groups tokens by entropy levels for detailed analysis
-4. **Position Analysis**: Shows how entropy changes throughout the generation
-5. **Interesting Findings**: Highlights highest/lowest entropy tokens and most confident predictions
+### Visualizations
+- **`aggregated_entropy_distribution.png`** - Histogram comparing entropy distributions
+- **`entropy_over_steps.png`** - Entropy over generation steps for sample prompts
 
-## Customization
+### Detailed Analysis (Optional)
+- **`{model_name}_all_tokens_detailed.csv`** - Detailed token stats with prompt tracking (only with `--save_detailed_tokens`)
 
-You can modify the script to:
+### Example Output Structure
+```
+results/
+├── Checkpoint_1_token_stats.csv
+├── Checkpoint_2_token_stats.csv
+├── Checkpoint_4_token_stats.csv
+├── Checkpoint_10_token_stats.csv
+├── prompt_level_results.csv
+├── aggregated_entropy_distribution.png
+├── entropy_over_steps.png
+├── results_summary.json
+└── [detailed files if --save_detailed_tokens used]
+```
 
-- Change the number of prompts by editing the `PROMPTS` list
-- Adjust the maximum generation length with `MAX_NEW_TOKENS`
-- Add more analysis metrics in the `get_stats_for_generation` function
-- Modify the visualizations in the plotting section
+## 🔍 What Gets Analyzed
 
-## Example Output
+### Token-Level Statistics
+- **Entropy**: Uncertainty in next-token prediction
+- **Probability of chosen token**: How confident the model was
+- **Current/Next token**: The actual tokens generated
+- **Generation step**: Which step in the generation process
 
-The script will print:
-- Progress updates for each prompt
-- Summary statistics
-- Token quantile analysis
-- Interesting findings (highest/lowest entropy tokens)
-- File save confirmations
+### Key Metrics
+- **Mean/Median/Std entropy**: Overall uncertainty patterns
+- **Min/Max entropy**: Extremes in model confidence
+- **Token quantiles**: High/low entropy token analysis
 
-## Notes
+## 🧪 Testing and Validation
 
-- The script uses the same prompts as the original notebook for reproducibility
-- All analysis is done on the generated tokens (not teacher-forced)
-- The script automatically handles device selection (CPU/GPU)
-- Timestamps are added to all output files to prevent overwrites 
+### Quick Test (5 examples)
+```bash
+python model_comparison_analysis.py \
+    --model_paths /tmpdir/m24047krsh/models/qwen-2.5-1.5b-instruct-reasoning-sft-checkpoint-1-of-10 \
+                  /tmpdir/m24047krsh/models/qwen-2.5-1.5b-instruct-reasoning-sft-checkpoint-2-of-10 \
+    --model_names "Checkpoint_1" "Checkpoint_2" \
+    --num_examples 5 \
+    --max_new_tokens 50
+```
+
+### Full Analysis with Detailed Stats
+```bash
+python model_comparison_analysis.py \
+    --model_paths /tmpdir/m24047krsh/models/qwen-2.5-1.5b-instruct-reasoning-sft-checkpoint-1-of-10 \
+                  /tmpdir/m24047krsh/models/qwen-2.5-1.5b-instruct-reasoning-sft-checkpoint-2-of-10 \
+                  /tmpdir/m24047krsh/models/qwen-2.5-1.5b-instruct-reasoning-sft-checkpoint-4-of-10 \
+                  /tmpdir/m24047krsh/models/qwen-2.5-1.5b-instruct-reasoning-sft-checkpoint-10-of-10 \
+    --model_names "Checkpoint_1" "Checkpoint_2" "Checkpoint_4" "Checkpoint_10" \
+    --num_examples 1000 \
+    --max_new_tokens 256 \
+    --save_detailed_tokens
+```
+
+## ⚠️ Important Notes
+
+### Memory Requirements
+- **All models are loaded simultaneously** - ensure sufficient GPU memory
+- **4 models × 1.5B parameters** ≈ 6GB+ GPU memory needed
+- Consider using fewer models or smaller batch sizes if memory is limited
+
+### Generation Analysis
+- **Only generated tokens are analyzed** (not system/user prompts)
+- **Generation steps start from 1** (first generated token)
+- **Entropy is calculated on next-token distributions**
+
+### File Sizes
+- **Detailed token files can be large** (1000 prompts × 256 tokens × 4 models)
+- **Use `--save_detailed_tokens` only when needed**
+- **Results are saved incrementally** to avoid losing progress
+
+## 🔬 Understanding the Results
+
+### High Entropy Tokens
+- Indicate model uncertainty
+- Often occur at decision points
+- May correspond to "thinking" moments
+
+### Low Entropy Tokens
+- Indicate high confidence
+- Often punctuation, common words, or formulaic responses
+- May show learned patterns
+
+### Entropy Trends
+- **Decreasing entropy**: Model becomes more confident during generation
+- **Spikes in entropy**: Model faces difficult decisions
+- **Checkpoint differences**: Training progress indicators
+
+## 🛠️ Troubleshooting
+
+### Common Issues
+1. **Out of Memory**: Reduce number of models or use smaller examples
+2. **Model Path Not Found**: Verify paths exist and are accessible
+3. **Data File Not Found**: Check the `--data_path` argument
+4. **CUDA Issues**: Script automatically falls back to CPU if CUDA unavailable
+
+### Debug Information
+The script provides detailed debug output:
+- Model loading progress
+- Prompt vs generation lengths
+- Number of tokens analyzed
+- Sample token statistics
+
+## 📚 Example Analysis Workflow
+
+1. **Start with a small test** (5-10 examples)
+2. **Verify model paths and data format**
+3. **Run full analysis** with desired parameters
+4. **Examine visualizations** for overall patterns
+5. **Analyze detailed statistics** for specific insights
+6. **Compare checkpoints** to understand training progress
+
+## 🤝 Contributing
+
+This script is designed for research purposes. Feel free to modify for your specific needs:
+- Add new metrics in `get_stats_for_generation()`
+- Modify visualization functions
+- Extend analysis capabilities
+- Add support for different data formats
+
+## 📄 License
+
+This script is provided for research purposes. Please cite appropriately if used in academic work. 
